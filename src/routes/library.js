@@ -7,7 +7,7 @@ import {
   advancedFilter,
   getComparisonCandidates
 } from '../services/library.service.js';
-import { createAuditLog } from '../services/audit.service.js';
+import { getAvailableLanguages, getAvailableUploaders } from '../services/document.service.js';
 
 const router = Router();
 
@@ -20,18 +20,8 @@ router.use(extractIpAddress);
  */
 router.get('/search', requireAuth, async (req, res) => {
   try {
-    const { searchTerm, productId, type, marketId, status, page, limit } = req.query;
-
-    const result = await searchDocuments({
-      searchTerm,
-      productId,
-      type,
-      marketId,
-      status,
-      page,
-      limit
-    });
-
+    const { searchTerm, ...filters } = req.query;
+    const result = await searchDocuments({ searchTerm, ...filters });
     res.json(result);
   } catch (error) {
     console.error('Error searching documents:', error);
@@ -40,13 +30,39 @@ router.get('/search', requireAuth, async (req, res) => {
 });
 
 /**
- * POST /api/library/filter
+ * GET /api/library/filter
  * Advanced filter with multiple criteria
  */
-router.post('/filter', requireAuth, async (req, res) => {
+router.get('/filter', requireAuth, async (req, res) => {
   try {
-    const filters = req.body;
-    const result = await advancedFilter(filters);
+    const {
+      searchTerm,
+      types,
+      markets,
+      languages,
+      uploadDateFrom,
+      uploadDateTo,
+      uploadedBy,
+      status,
+      page,
+      limit
+    } = req.query;
+
+    // Parse array parameters
+    const parsedFilters = {
+      searchTerm,
+      types: types ? (Array.isArray(types) ? types : [types]) : [],
+      markets: markets ? (Array.isArray(markets) ? markets : [markets]) : [],
+      languages: languages ? (Array.isArray(languages) ? languages : [languages]) : [],
+      uploadDateFrom,
+      uploadDateTo,
+      uploadedBy,
+      status,
+      page,
+      limit
+    };
+
+    const result = await advancedFilter(parsedFilters);
     res.json(result);
   } catch (error) {
     console.error('Error filtering documents:', error);
@@ -56,7 +72,7 @@ router.post('/filter', requireAuth, async (req, res) => {
 
 /**
  * GET /api/library/statistics
- * Get document library statistics
+ * Get document statistics for library dashboard
  */
 router.get('/statistics', requireAuth, async (req, res) => {
   try {
@@ -70,7 +86,7 @@ router.get('/statistics', requireAuth, async (req, res) => {
 
 /**
  * GET /api/library/version-history
- * Get document version history for a product/market/type
+ * Get document version history for a product and market
  */
 router.get('/version-history', requireAuth, async (req, res) => {
   try {
@@ -78,31 +94,11 @@ router.get('/version-history', requireAuth, async (req, res) => {
 
     if (!productId || !type) {
       return res.status(400).json({ 
-        error: 'Product ID and document type are required' 
+        error: 'Missing required parameters: productId and type are required' 
       });
     }
 
-    const history = await getDocumentVersionHistory({
-      productId,
-      marketId,
-      type
-    });
-
-    // Log version history access
-    await createAuditLog({
-      userId: req.user.userId,
-      action: 'DocumentUploaded',
-      entityType: 'Document',
-      entityId: null,
-      details: {
-        action: 'version_history_viewed',
-        productId: parseInt(productId),
-        marketId: marketId ? parseInt(marketId) : null,
-        type
-      },
-      ipAddress: req.ipAddress
-    });
-
+    const history = await getDocumentVersionHistory({ productId, marketId, type });
     res.json(history);
   } catch (error) {
     console.error('Error fetching version history:', error);
@@ -125,6 +121,34 @@ router.get('/comparison-candidates/:documentId', requireAuth, async (req, res) =
     } else {
       res.status(500).json({ error: 'Failed to fetch comparison candidates' });
     }
+  }
+});
+
+/**
+ * GET /api/library/metadata/languages
+ * Get available languages for filter dropdown
+ */
+router.get('/metadata/languages', requireAuth, async (req, res) => {
+  try {
+    const languages = getAvailableLanguages();
+    res.json({ languages });
+  } catch (error) {
+    console.error('Error fetching languages:', error);
+    res.status(500).json({ error: 'Failed to fetch languages' });
+  }
+});
+
+/**
+ * GET /api/library/metadata/uploaders
+ * Get available uploaders for filter dropdown
+ */
+router.get('/metadata/uploaders', requireAuth, async (req, res) => {
+  try {
+    const uploaders = getAvailableUploaders();
+    res.json({ uploaders });
+  } catch (error) {
+    console.error('Error fetching uploaders:', error);
+    res.status(500).json({ error: 'Failed to fetch uploaders' });
   }
 });
 
