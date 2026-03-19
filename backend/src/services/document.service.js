@@ -1,16 +1,46 @@
 /**
- * Get document by ID
- * @param {number} documentId - Document ID
- * @returns {Promise<Object|null>} Document object or null if not found
+ * Document Service
+ * Mock implementation for document retrieval
+ * In production, this would query the database
  */
-export const getDocumentById = async (documentId) => {
-  // Mock implementation - in production, query database
-  const mockDocuments = {
-    1: { id: 1, type: 'ApprovedPIL', productId: 1, marketId: 1, fileName: 'Paracetamol_PIL_TW.pdf' },
-    101: { id: 101, type: 'RegulatoryAnnouncement', productId: 1, marketId: 1, fileName: 'TFDA_Announcement.pdf' },
-    102: { id: 102, type: 'InnovatorPIL', productId: 1, marketId: 1, fileName: 'Innovator_PIL_US.pdf' },
-    103: { id: 103, type: 'CommercialAW', productId: 1, marketId: 1, fileName: 'Commercial_AW.pdf' },
-  };
 
-  return mockDocuments[documentId] || null;
+const mockDocuments = [
+  {
+    id: 1,
+    productId: 1,
+    type: 'InnovatorPIL',
+    marketId: null,
+    language: 'en',
+    filePath: '/documents/innovator-pil-1.pdf',
+    fileName: 'Innovator-PIL-Product-A.pdf',
+    fileSize: 1024000,
+    uploadUserId: 1,
+    uploadDate: '2024-01-15T10:00:00Z',
+    status: 'Active',
+  },
+  {
+    id: 2,
+    productId: 1,
+    type: 'RegulatorySource',
+    marketId: 1,
+    language: 'zh-TW',
+    filePath: '/documents/regulatory-source-taiwan.pdf',
+    fileName: 'TFDA-PIL-Format-2024.pdf',
+    fileSize: 512000,
+    uploadUserId: 1,
+    uploadDate: '2024-01-15T10:30:00Z',
+    status: 'Active',
+  },
+];
+
+export const getDocumentById = async (documentId) => {
+  const doc = mockDocuments.find((d) => d.id === documentId);
+  if (!doc) {
+    throw new Error(`Document not found: ${documentId}`);
+  }
+  return doc;
+};
+
+export const getDocumentsByProduct = async (productId) => {
+  return mockDocuments.filter((d) => d.productId === productId);
 };
