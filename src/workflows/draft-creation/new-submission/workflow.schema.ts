@@ -33,6 +33,11 @@ export interface NewSubmissionWorkflowContext {
   alignmentTime?: number;
   gapAnalysisTime?: number;
   outlineGenerationTime?: number;
+  
+  // Time savings tracking
+  baselineManualTimeHours?: number; // 8-32 hours baseline
+  estimatedAiTimeHours?: number; // 2-8 hours target
+  timeSavingsHours?: number;
 }
 
 export interface SectionAlignmentResult {
@@ -45,6 +50,8 @@ export interface SectionAlignmentResult {
     totalRegulatorySections: number;
     matchedPairs: number;
     processingTimeMs: number;
+    autoAcceptedMatches?: number; // High-confidence semantic matches
+    claudeVerifiedMatches?: number; // Medium-confidence matches verified by Claude
   };
 }
 
@@ -127,6 +134,10 @@ export interface DraftOutline {
     generatedAt: string;
     totalSections: number;
     estimatedTranslationTime: string;
+    baselineManualTimeHours: number; // 8-32 hours baseline
+    estimatedAiTimeHours: number; // 2-8 hours target
+    timeSavingsHours: number;
+    timeSavingsPercentage: number;
   };
 }
 

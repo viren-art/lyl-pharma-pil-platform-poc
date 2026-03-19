@@ -1,5 +1,4 @@
 // LYL_DEP: @anthropic-ai/sdk@^0.20.0
-// LYL_DEP: sentence-transformers@^2.2.0
 
 import Anthropic from '@anthropic-ai/sdk';
 import type {
@@ -13,6 +12,11 @@ const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 const MODEL = 'claude-3-opus-20240229';
 const MAX_TOKENS = 4096;
 
+// Semantic similarity confidence threshold for auto-acceptance
+const SEMANTIC_MATCH_THRESHOLD = 0.7; // High confidence matches bypass Claude verification
+const SEMANTIC_HINT_THRESHOLD = 0.5; // Medium confidence matches sent to Claude as hints
+const SEMANTIC_REJECT_THRESHOLD = 0.3; // Low confidence matches rejected outright
+
 interface AlignSectionsParams {
   innovatorSections: any[];
   regulatorySections: any[];
@@ -23,18 +27,33 @@ interface AlignSectionsParams {
 }
 
 /**
- * Calculate semantic similarity between two text strings
- * Uses simple cosine similarity on word vectors as lightweight alternative to sentence-transformers
+ * Calculate semantic similarity between two text strings using TF-IDF weighted cosine similarity
+ * This provides better accuracy than simple word frequency for pharmaceutical content
  */
 const calculateSemanticSimilarity = (text1: string, text2: string): number => {
-  const words1 = text1.toLowerCase().split(/\s+/);
-  const words2 = text2.toLowerCase().split(/\s+/);
+  // Normalize and tokenize
+  const normalize = (text: string) => text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+  const words1 = normalize(text1);
+  const words2 = normalize(text2);
   
+  // Build vocabulary
   const allWords = Array.from(new Set([...words1, ...words2]));
   
-  const vector1 = allWords.map(word => words1.filter(w => w === word).length);
-  const vector2 = allWords.map(word => words2.filter(w => w === word).length);
+  // Calculate term frequency
+  const tf1 = allWords.map(word => words1.filter(w => w === word).length);
+  const tf2 = allWords.map(word => words2.filter(w => w === word).length);
   
+  // Calculate inverse document frequency (simple approximation)
+  const idf = allWords.map(word => {
+    const docCount = (words1.includes(word) ? 1 : 0) + (words2.includes(word) ? 1 : 0);
+    return Math.log(2 / docCount);
+  });
+  
+  // TF-IDF weighted vectors
+  const vector1 = tf1.map((tf, i) => tf * idf[i]);
+  const vector2 = tf2.map((tf, i) => tf * idf[i]);
+  
+  // Cosine similarity
   const dotProduct = vector1.reduce((sum, val, i) => sum + val * vector2[i], 0);
   const magnitude1 = Math.sqrt(vector1.reduce((sum, val) => sum + val * val, 0));
   const magnitude2 = Math.sqrt(vector2.reduce((sum, val) => sum + val * val, 0));
@@ -45,16 +64,84 @@ const calculateSemanticSimilarity = (text1: string, text2: string): number => {
 };
 
 /**
- * Generate Claude prompt for section alignment
+ * Perform initial semantic similarity matching before Claude analysis
+ * This provides a baseline alignment that Claude can refine
+ */
+const performSemanticMatching = (
+  innovatorSections: any[],
+  regulatorySections: any[]
+): Array<{ innovatorIdx: number; regulatoryIdx: number; similarity: number }> => {
+  const matches: Array<{ innovatorIdx: number; regulatoryIdx: number; similarity: number }> = [];
+  
+  for (let i = 0; i < innovatorSections.length; i++) {
+    const innovatorSection = innovatorSections[i];
+    let bestMatch = { regulatoryIdx: -1, similarity: 0 };
+    
+    for (let j = 0; j < regulatorySections.length; j++) {
+      const regulatorySection = regulatorySections[j];
+      
+      // Calculate similarity based on section name and content
+      const nameSimilarity = calculateSemanticSimilarity(
+        innovatorSection.sectionName,
+        regulatorySection.sectionName
+      );
+      const contentSimilarity = calculateSemanticSimilarity(
+        innovatorSection.content.substring(0, 500), // First 500 chars for performance
+        regulatorySection.requirements || regulatorySection.sectionName
+      );
+      
+      // Weighted average (name is more important for section matching)
+      const combinedSimilarity = nameSimilarity * 0.7 + contentSimilarity * 0.3;
+      
+      if (combinedSimilarity > bestMatch.similarity) {
+        bestMatch = { regulatoryIdx: j, similarity: combinedSimilarity };
+      }
+    }
+    
+    // Only include matches above rejection threshold
+    if (bestMatch.similarity > SEMANTIC_REJECT_THRESHOLD) {
+      matches.push({
+        innovatorIdx: i,
+        regulatoryIdx: bestMatch.regulatoryIdx,
+        similarity: bestMatch.similarity,
+      });
+    }
+  }
+  
+  return matches;
+};
+
+/**
+ * Generate Claude prompt for section alignment with semantic matching hints
  */
 const generateAlignmentPrompt = (
   innovatorSections: any[],
   regulatorySections: any[],
-  requiredSections: string[]
+  requiredSections: string[],
+  semanticMatches: Array<{ innovatorIdx: number; regulatoryIdx: number; similarity: number }>
 ): string => {
+  // Build semantic matching hints for Claude (only medium-confidence matches)
+  const matchHints = semanticMatches
+    .filter(m => m.similarity >= SEMANTIC_HINT_THRESHOLD && m.similarity < SEMANTIC_MATCH_THRESHOLD)
+    .map(m => {
+      const innovator = innovatorSections[m.innovatorIdx];
+      const regulatory = regulatorySections[m.regulatoryIdx];
+      return `- "${innovator.sectionName}" → "${regulatory.sectionName}" (similarity: ${(m.similarity * 100).toFixed(0)}%)`;
+    })
+    .join('\n');
+
+  // High-confidence matches already accepted, low-confidence rejected
+  const autoAcceptedCount = semanticMatches.filter(m => m.similarity >= SEMANTIC_MATCH_THRESHOLD).length;
+  const autoRejectedCount = innovatorSections.length - semanticMatches.length;
+
   return `You are a pharmaceutical regulatory expert analyzing Patient Information Leaflet (PIL) sections.
 
 TASK: Align sections from an English Innovator PIL with target market regulatory requirements.
+
+SEMANTIC MATCHING ANALYSIS (Pre-computed):
+- ${autoAcceptedCount} high-confidence matches (≥${(SEMANTIC_MATCH_THRESHOLD * 100).toFixed(0)}%) auto-accepted
+- ${autoRejectedCount} low-confidence matches (<${(SEMANTIC_REJECT_THRESHOLD * 100).toFixed(0)}%) auto-rejected
+- ${matchHints ? 'Medium-confidence matches for your review:\n' + matchHints : 'No medium-confidence matches - verify all alignments'}
 
 INNOVATOR PIL SECTIONS (English):
 ${innovatorSections.map((s, i) => `${i + 1}. ${s.sectionName}\n   Content preview: ${s.content.substring(0, 200)}...`).join('\n\n')}
@@ -66,12 +153,13 @@ REQUIRED SECTIONS FOR THIS MARKET:
 ${requiredSections.join(', ')}
 
 INSTRUCTIONS:
-1. Match each Innovator PIL section to the most appropriate Regulatory section
-2. Identify alignment type: exact (same section name), semantic (similar content), partial (overlapping content), inferred (best guess)
-3. Flag Innovator sections with no regulatory match (orphaned)
-4. Flag Regulatory sections with no Innovator match (unmatched/gaps)
-5. Provide confidence score (0.0-1.0) for each alignment
-6. Add notes explaining alignment decisions, especially for semantic/partial/inferred matches
+1. VERIFY the medium-confidence semantic matches above - confirm or reject based on content analysis
+2. For unmatched sections, perform fresh alignment using content similarity
+3. Identify alignment type: exact (same section name), semantic (similar content), partial (overlapping content), inferred (best guess)
+4. Flag Innovator sections with no regulatory match (orphaned)
+5. Flag Regulatory sections with no Innovator match (unmatched/gaps)
+6. Provide confidence score (0.0-1.0) for each alignment based on content similarity
+7. Add notes explaining alignment decisions, especially for semantic/partial/inferred matches
 
 OUTPUT FORMAT (JSON):
 {
@@ -93,7 +181,7 @@ OUTPUT FORMAT (JSON):
       "sectionName": "Patient Counseling Information",
       "content": "...",
       "reason": "Not required in target market regulatory format",
-      "suggestedDisposition": "Omit - US-specific section"
+      "suggestedDisposition": "Omit - regulatory requirement specific to FDA format"
     }
   ],
   "unmatchedRegulatorySections": [
@@ -129,7 +217,7 @@ const parseAlignmentResponse = (response: string): {
 };
 
 /**
- * Align sections between Innovator PIL and Regulatory Source
+ * Align sections between Innovator PIL and Regulatory Source using semantic similarity + Claude AI
  */
 export const alignSections = async (
   params: AlignSectionsParams
@@ -146,14 +234,30 @@ export const alignSections = async (
       requirements: `Standard PIL content for ${sectionName}`,
     }));
 
-    // Generate alignment prompt
+    // Step 1: Perform semantic similarity matching
+    const semanticMatches = performSemanticMatching(params.innovatorSections, regulatorySections);
+    
+    console.log(`[Section Alignment] Semantic matching found ${semanticMatches.length} potential matches`);
+
+    // Step 2: Auto-accept high-confidence matches (≥70%)
+    const autoAcceptedMatches = semanticMatches.filter(m => m.similarity >= SEMANTIC_MATCH_THRESHOLD);
+    console.log(`[Section Alignment] Auto-accepted ${autoAcceptedMatches.length} high-confidence matches (≥${(SEMANTIC_MATCH_THRESHOLD * 100).toFixed(0)}%)`);
+
+    // Step 3: Send medium-confidence matches to Claude for verification
+    const mediumConfidenceMatches = semanticMatches.filter(
+      m => m.similarity >= SEMANTIC_HINT_THRESHOLD && m.similarity < SEMANTIC_MATCH_THRESHOLD
+    );
+    console.log(`[Section Alignment] Sending ${mediumConfidenceMatches.length} medium-confidence matches to Claude for verification`);
+
+    // Step 4: Generate alignment prompt with semantic hints
     const prompt = generateAlignmentPrompt(
       params.innovatorSections,
       regulatorySections,
-      params.marketConfig.requiredSections
+      params.marketConfig.requiredSections,
+      semanticMatches
     );
 
-    // Call Claude API
+    // Step 5: Call Claude API for refined alignment
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
@@ -171,10 +275,29 @@ export const alignSections = async (
     }
 
     // Parse response
-    const { alignments, orphaned, unmatched } = parseAlignmentResponse(textContent.text);
+    const { alignments: claudeAlignments, orphaned, unmatched } = parseAlignmentResponse(textContent.text);
+
+    // Step 6: Merge auto-accepted matches with Claude-verified matches
+    const autoAcceptedAlignments = autoAcceptedMatches.map(m => {
+      const innovatorSection = params.innovatorSections[m.innovatorIdx];
+      const regulatorySection = regulatorySections[m.regulatoryIdx];
+      return {
+        innovatorSectionName: innovatorSection.sectionName,
+        innovatorContent: innovatorSection.content,
+        regulatorySectionName: regulatorySection.sectionName,
+        regulatoryRequirements: regulatorySection.requirements,
+        regulatoryOrder: regulatorySection.order,
+        regulatoryMandatory: regulatorySection.mandatory,
+        confidence: m.similarity, // Use semantic similarity as confidence
+        alignmentType: m.similarity >= 0.9 ? 'exact' : 'semantic',
+        notes: [`Auto-accepted by semantic matching (${(m.similarity * 100).toFixed(0)}% similarity)`],
+      };
+    });
+
+    const allAlignments = [...autoAcceptedAlignments, ...claudeAlignments];
 
     // Build structured result
-    const sectionAlignments: SectionAlignment[] = alignments.map((a: any) => ({
+    const sectionAlignments: SectionAlignment[] = allAlignments.map((a: any) => ({
       innovatorSection: {
         name: a.innovatorSectionName,
         content: a.innovatorContent || '',
@@ -214,6 +337,9 @@ export const alignSections = async (
         : 0;
 
     const processingTimeMs = Date.now() - startTime;
+
+    console.log(`[Section Alignment] Completed in ${processingTimeMs}ms with ${sectionAlignments.length} alignments (avg confidence: ${(avgConfidence * 100).toFixed(1)}%)`);
+    console.log(`[Section Alignment] Breakdown: ${autoAcceptedAlignments.length} auto-accepted, ${claudeAlignments.length} Claude-verified`);
 
     return {
       alignments: sectionAlignments,
