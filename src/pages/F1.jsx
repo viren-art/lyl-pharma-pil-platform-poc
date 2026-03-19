@@ -1,3 +1,4 @@
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 export default function AuthPreview() {
   const [view, setView] = useState('login');
   const [email, setEmail] = useState('');

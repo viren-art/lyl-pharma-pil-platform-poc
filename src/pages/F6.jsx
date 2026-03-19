@@ -1,3 +1,4 @@
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 export default function F6Preview() {
   const [activeTab, setActiveTab] = React.useState('workflow');
   const [workflowState, setWorkflowState] = React.useState('aligning_sections');

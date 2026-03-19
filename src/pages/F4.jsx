@@ -1,3 +1,4 @@
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 export default function F4Preview() {
   const [activeTab, setActiveTab] = React.useState('pipeline');
   const [selectedDoc, setSelectedDoc] = React.useState(null);

@@ -1,3 +1,4 @@
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 export default function F3MarketConfigPreview() {
   const [activeTab, setActiveTab] = React.useState('markets');
   const [selectedMarket, setSelectedMarket] = React.useState(null);
